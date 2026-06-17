@@ -12,6 +12,7 @@ from i2rt.motor_drivers.dm_driver import (
     MotorChain,
     MotorInfo,
 )
+from i2rt.robots.kinematics import Kinematics
 from i2rt.robots.robot import Robot
 from i2rt.robots.utils import GripperForceLimiter, GripperType, JointMapper
 from i2rt.utils.mujoco_utils import MuJoCoKDL
@@ -185,6 +186,7 @@ class MotorChainRobot(Robot):
         self._command_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._joint_state: Optional[JointStates] = None
+        self._kinematics: Optional[Kinematics] = None
         while self._joint_state is None:
             # wait to recive joint data
             time.sleep(0.05)
@@ -200,6 +202,95 @@ class MotorChainRobot(Robot):
         if not zero_gravity_mode:
             # set current qpos as target pos with the default PD parameters
             self.command_joint_pos(self._joint_state.pos)
+
+    def _get_kinematics(self) -> Kinematics:
+        if not hasattr(self, "xml_path"):
+            raise RuntimeError(f"{self}: xml_path is required for end effector control.")
+        if self._kinematics is None:
+            self._kinematics = Kinematics(self.xml_path, "grasp_site")
+        return self._kinematics
+
+    @staticmethod
+    def _rot_x(angle: float) -> np.ndarray:
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+
+    @staticmethod
+    def _rot_y(angle: float) -> np.ndarray:
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+
+    @staticmethod
+    def _rot_z(angle: float) -> np.ndarray:
+        c, s = np.cos(angle), np.sin(angle)
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+    @classmethod
+    def _extrinsic_xyz_to_rot(cls, euler_xyz: np.ndarray) -> np.ndarray:
+        rx, ry, rz = euler_xyz.tolist()
+        return cls._rot_z(rz) @ cls._rot_y(ry) @ cls._rot_x(rx)
+
+    def command_end_effector_delta(
+        self,
+        delta_xyz: np.ndarray,
+        delta_euler_xyz: np.ndarray,
+        site_name: str = "grasp_site",
+        frame: str = "world",
+        ik_dt: float = 0.01,
+        ik_max_iters: int = 200,
+    ) -> bool:
+        """Command the end effector by a delta pose.
+
+        Args:
+            delta_xyz (np.ndarray): Translation delta in meters, shape (3,).
+            delta_euler_xyz (np.ndarray): Extrinsic XYZ euler delta in radians, shape (3,).
+            site_name (str): MuJoCo site name for the end effector.
+            frame (str): "world" applies the delta in the world frame, "local" in the EE frame.
+            ik_dt (float): IK integration step (s).
+            ik_max_iters (int): IK iteration cap.
+        """
+        delta_xyz = np.asarray(delta_xyz, dtype=float).reshape(3)
+        delta_euler_xyz = np.asarray(delta_euler_xyz, dtype=float).reshape(3)
+
+        kinematics = self._get_kinematics()
+        with self._state_lock:
+            current_joint_pos = self._joint_state.pos.copy()
+
+        model_nq = kinematics.nq
+        if model_nq > current_joint_pos.shape[0]:
+            raise RuntimeError(
+                f"{self}: Kinematics expects {model_nq} joints but robot has {current_joint_pos.shape[0]}."
+            )
+
+        arm_q = current_joint_pos[:model_nq]
+        current_pose = kinematics.fk(arm_q, site_name)
+
+        delta_pose = np.eye(4)
+        delta_pose[:3, :3] = self._extrinsic_xyz_to_rot(delta_euler_xyz)
+        delta_pose[:3, 3] = delta_xyz
+
+        if frame == "world":
+            target_pose = delta_pose @ current_pose
+        elif frame == "local":
+            target_pose = current_pose @ delta_pose
+        else:
+            raise ValueError(f"Unknown frame: {frame}, expected 'world' or 'local'.")
+
+        success, q_ik = kinematics.ik(
+            target_pose,
+            site_name,
+            init_q=arm_q,
+            dt=ik_dt,
+            max_iters=ik_max_iters,
+        )
+
+        if not success:
+            return False
+
+        target_joint_pos = current_joint_pos.copy()
+        target_joint_pos[:model_nq] = q_ik
+        self.command_joint_pos(target_joint_pos)
+        return True
     def __repr__(self) -> str:
         return f"MotorChainRobot(motor_chain={self.motor_chain})"
 

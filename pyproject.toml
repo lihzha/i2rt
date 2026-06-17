@@ -21,6 +21,10 @@ dependencies = [
     "ruckig==0.15.3",
     "threadpoolctl==3.6.0",
     "tyro==0.9.26",
+    "pillow",
+    "opencv-python",
+    "h5py",
+    "moviepy==1.0.3"
 ]
 
 [project.optional-dependencies]

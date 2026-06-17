@@ -78,7 +78,7 @@ class GripperType(enum.Enum):
 
     def get_motor_kp_kd(self) -> tuple[float, float]:
         if self in [GripperType.CRANK_4310, GripperType.LINEAR_4310]:
-            return 20, 0.5
+            return 5, 0.5
         elif self in [GripperType.LINEAR_3507]:
             return 10, 0.3
         elif self == GripperType.YAM_TEACHING_HANDLE:
@@ -250,7 +250,7 @@ class GripperForceLimiter:
         max_force: float,
         gripper_type: GripperType,
         kp: float,
-        average_torque_window: float = 0.1,  # in seconds
+        average_torque_window: float = 0.01,  # in seconds
         debug: bool = False,
     ):
         self.max_force = max_force

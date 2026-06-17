@@ -15,8 +15,13 @@ class Kinematics:
             site_name (Optional[str]): Name of the site for which to compute the forward kinematics.
         """
         model = mujoco.MjModel.from_xml_path(xml_path)
+        self._model = model
         self._configuration = mink.Configuration(model)
         self._site_name = site_name
+
+    @property
+    def nq(self) -> int:
+        return self._model.nq
 
     def fk(self, q: np.ndarray, site_name: Optional[str] = None) -> np.ndarray:
         """Compute the forward kinematics for the given joint configuration.
